@@ -1,0 +1,20 @@
+# Data
+data/
+
+# Figures
+*.png
+*.jpg
+*.jpeg
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+
+# IDE
+.idea/
+.vscode/
+
+# Claude
+.claude/
