@@ -35,9 +35,14 @@ DATASETS = ["06082025", "26082025"]
 # Helpers
 # ---------------------------------------------------------------------------
 
-def collect_zmap_files(data_dir: Path, datasets: list[str]) -> list[tuple]:
-    """Return list of (zmap_dir, filename) tuples for all .tif files."""
+def collect_zmap_files(data_dir: Path, datasets: list[str]) -> tuple[list[tuple], dict]:
+    """
+    Return:
+        files   : list of (zmap_dir, filename) tuples
+        fn_map  : dict mapping filename → dataset name
+    """
     files = []
+    fn_map = {}
     for dataset in datasets:
         zmap_dir = data_dir / dataset / "zmap"
         if not zmap_dir.exists():
@@ -45,12 +50,14 @@ def collect_zmap_files(data_dir: Path, datasets: list[str]) -> list[tuple]:
             continue
         tifs = sorted(f for f in os.listdir(zmap_dir) if f.endswith(".tif"))
         files.extend((zmap_dir, f) for f in tifs)
+        fn_map.update({f: dataset for f in tifs})
         print(f"  {dataset}: {len(tifs)} files")
-    return files
+    return files, fn_map
 
 
 def load_metadata(data_dir: Path, datasets: list[str]) -> pd.DataFrame:
-    """Load and concatenate metadata xlsx files from all datasets."""
+    """Load and concatenate metadata xlsx files. Cleans junk columns."""
+    junk = ["*", "Unnamed: 10", "Unnamed: 11"]
     frames = []
     for dataset in datasets:
         path = data_dir / dataset / f"{dataset}_metadata.xlsx"
@@ -59,6 +66,9 @@ def load_metadata(data_dir: Path, datasets: list[str]) -> pd.DataFrame:
             continue
         df = pd.read_excel(path)
         df["dataset"] = dataset
+        df = df.drop(columns=[c for c in junk if c in df.columns])
+        df = df.rename(columns={"#": "sample_id"})
+        df["sample_id"] = df["sample_id"].astype(int)
         frames.append(df)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
@@ -84,7 +94,7 @@ def main():
 
     # Collect files
     print("Collecting z-map files...")
-    zmap_files = collect_zmap_files(DATA_DIR, DATASETS)
+    zmap_files, fn_map = collect_zmap_files(DATA_DIR, DATASETS)
     print(f"Total: {len(zmap_files)} files\n")
 
     if not zmap_files:
@@ -98,16 +108,22 @@ def main():
 
     # Compute Q-factors
     print("Computing Q-factors...")
-    params = QFactorParams()  # optimal defaults from study
+    params = QFactorParams()
     df_q = process_dataset(zmap_files, segment_width_um=segment_width_um, params=params)
     print(f"\nTotal slices: {len(df_q):,}")
     print(f"Valid Q-factors: {df_q['q_factor'].notna().sum():,} "
           f"({df_q['q_factor'].notna().mean() * 100:.1f}%)")
 
-    # Join with metadata
+    # Add sample_id and dataset columns for joining
+    import re
+    df_q["dataset"] = df_q["filename"].map(fn_map)
+    df_q["sample_id"] = df_q["filename"].str.extract(r"^(\d+)_").astype(int)
+
+    # Join with metadata on sample_id + dataset
     if not df_metadata.empty:
-        df_out = df_q.merge(df_metadata, on="filename", how="left")
-        print(f"Metadata joined: {df_out['dataset'].notna().sum():,} rows matched")
+        df_out = df_q.merge(df_metadata, on=["sample_id", "dataset"], how="left")
+        matched = df_out["Material"].notna().sum()
+        print(f"Metadata joined: {matched:,} / {len(df_out):,} rows matched")
     else:
         df_out = df_q
 
