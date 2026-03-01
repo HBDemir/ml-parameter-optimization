@@ -71,3 +71,9 @@ Data is downloaded once and skipped on subsequent runs.
 ## Output
 
 The standalone `qfactor.py` module is the output of this study. See `README_qfactor.md`.
+
+---
+
+## Batch Extraction
+
+`extract_qfactors.py` runs the full pipeline over all images and exports a CSV. See `README_qfactor.md` for details.

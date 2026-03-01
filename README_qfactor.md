@@ -111,16 +111,31 @@ Every image goes through these steps in order:
 
 ---
 
+## Batch Extraction — `extract_qfactors.py`
+
+Standalone script that runs `process_dataset()` over all images, joins with metadata, and exports a CSV. No arguments needed for a default run.
+
+```bash
+# Default — 1 µm slices → qfactors_1.0um.csv
+python extract_qfactors.py
+
+# Custom slice width
+python extract_qfactors.py --slice 0.5
+
+# Custom output path
+python extract_qfactors.py --slice 2.0 --out dataset.csv
+```
+
+Output CSV has all 13 Q-factor columns plus any metadata columns joined on `filename`.
+
+---
+
 ## ML Usage
 
 ```python
-from qfactor import process_dataset
+import pandas as pd
 
-# Compute Q-factors for all images
-df_q = process_dataset(all_zmap_files, segment_width_um=1.0)
-
-# Join with process metadata on filename
-df = df_q.merge(df_metadata, on="filename")
+df = pd.read_csv("qfactors_1.0um.csv")
 
 # Drop failed slices
 df = df[df["q_factor"].notna()]

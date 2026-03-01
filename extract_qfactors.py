@@ -1,0 +1,120 @@
+"""
+extract_qfactors.py
+
+Batch-computes Q-factors for all z-map images and exports the result to CSV.
+Uses qfactor.py for all processing.
+
+Output
+------
+qfactors_{segment_width_um}um.csv   — all slices with Q-factor and diagnostics,
+                                      joined with process metadata
+
+Usage
+-----
+    python extract_qfactors.py                  # default 1.0 µm slices
+    python extract_qfactors.py --slice 0.5      # 0.5 µm slices
+    python extract_qfactors.py --slice 2.0 --out results.csv
+"""
+
+import argparse
+import os
+from pathlib import Path
+
+import pandas as pd
+
+from qfactor import QFactorParams, process_dataset
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+DATA_DIR = Path("data/dataset_combined")
+DATASETS = ["06082025", "26082025"]
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def collect_zmap_files(data_dir: Path, datasets: list[str]) -> list[tuple]:
+    """Return list of (zmap_dir, filename) tuples for all .tif files."""
+    files = []
+    for dataset in datasets:
+        zmap_dir = data_dir / dataset / "zmap"
+        if not zmap_dir.exists():
+            print(f"Warning: {zmap_dir} not found, skipping.")
+            continue
+        tifs = sorted(f for f in os.listdir(zmap_dir) if f.endswith(".tif"))
+        files.extend((zmap_dir, f) for f in tifs)
+        print(f"  {dataset}: {len(tifs)} files")
+    return files
+
+
+def load_metadata(data_dir: Path, datasets: list[str]) -> pd.DataFrame:
+    """Load and concatenate metadata xlsx files from all datasets."""
+    frames = []
+    for dataset in datasets:
+        path = data_dir / dataset / f"{dataset}_metadata.xlsx"
+        if not path.exists():
+            print(f"Warning: metadata not found for {dataset}, skipping.")
+            continue
+        df = pd.read_excel(path)
+        df["dataset"] = dataset
+        frames.append(df)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description="Batch Q-factor extraction")
+    parser.add_argument("--slice", type=float, default=1.0,
+                        metavar="UM", help="Slice width in µm (default: 1.0)")
+    parser.add_argument("--out", type=str, default=None,
+                        help="Output CSV path (default: qfactors_{slice}um.csv)")
+    args = parser.parse_args()
+
+    segment_width_um = args.slice
+    output_path = Path(args.out) if args.out else Path(f"qfactors_{segment_width_um}um.csv")
+
+    print(f"Slice width : {segment_width_um} µm")
+    print(f"Output      : {output_path}")
+    print()
+
+    # Collect files
+    print("Collecting z-map files...")
+    zmap_files = collect_zmap_files(DATA_DIR, DATASETS)
+    print(f"Total: {len(zmap_files)} files\n")
+
+    if not zmap_files:
+        print("No files found. Check DATA_DIR path.")
+        return
+
+    # Load metadata
+    print("Loading metadata...")
+    df_metadata = load_metadata(DATA_DIR, DATASETS)
+    print(f"Metadata rows: {len(df_metadata)}\n")
+
+    # Compute Q-factors
+    print("Computing Q-factors...")
+    params = QFactorParams()  # optimal defaults from study
+    df_q = process_dataset(zmap_files, segment_width_um=segment_width_um, params=params)
+    print(f"\nTotal slices: {len(df_q):,}")
+    print(f"Valid Q-factors: {df_q['q_factor'].notna().sum():,} "
+          f"({df_q['q_factor'].notna().mean() * 100:.1f}%)")
+
+    # Join with metadata
+    if not df_metadata.empty:
+        df_out = df_q.merge(df_metadata, on="filename", how="left")
+        print(f"Metadata joined: {df_out['dataset'].notna().sum():,} rows matched")
+    else:
+        df_out = df_q
+
+    # Save
+    df_out.to_csv(output_path, index=False)
+    print(f"\nSaved: {output_path}  ({len(df_out):,} rows, {len(df_out.columns)} columns)")
+
+
+if __name__ == "__main__":
+    main()
