@@ -64,7 +64,7 @@ Open `analysis.ipynb` and run top-to-bottom. Exports figures and a summary CSV t
 
 ## Key Findings
 
-- **A and R are predictable** from process parameters (CV R² ≈ 0.49 / 0.43)
+- **A and R are predictable** from process parameters (CV R² ≈ 0.40 / 0.42)
 - **Q is not** — A and R co-vary, so the ratio R/A cancels most of the signal
 - **scan_speed** is the key lever for Q: faster scanning → less redeposition
 - **n_pass and range_um** drive total material removal (volume)
