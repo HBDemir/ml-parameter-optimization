@@ -1,6 +1,8 @@
 # qfactor.py
 
-Standalone module for computing Q-factors from OME-TIFF z-map images. Encapsulates the full processing pipeline with optimal parameters from the study.
+Standalone module for computing Q-factors from OME-TIFF z-map images.
+
+Located at `src/qfactor.py`.
 
 ---
 
@@ -19,6 +21,8 @@ pip install numpy pandas pillow scipy tqdm
 Processes a single z-map file. Returns one row per slice.
 
 ```python
+import sys
+sys.path.insert(0, 'src')
 from qfactor import compute_qfactor
 
 df = compute_qfactor("scan_001.tif", segment_width_um=1.0)
@@ -26,7 +30,7 @@ df = compute_qfactor("scan_001.tif", segment_width_um=1.0)
 
 ### `process_dataset(zmap_files, segment_width_um=1.0, params=None) → DataFrame`
 
-Batch-processes a list of files. Returns all slices from all files concatenated.
+Batch-processes a list of files. Returns all slices concatenated.
 
 ```python
 from qfactor import process_dataset
@@ -34,7 +38,7 @@ from qfactor import process_dataset
 df = process_dataset(all_zmap_files, segment_width_um=1.0)
 ```
 
-`zmap_files` is a list of `(directory_path, filename)` tuples — the same format produced by the notebook's data loading cell.
+`zmap_files` is a list of `(directory_path, filename)` tuples.
 
 ---
 
@@ -66,7 +70,7 @@ No filtering is applied — all slices are returned. Failed slices have `NaN` in
 
 ### `segment_width_um`
 
-Controls slice width in micrometers. The only parameter you need to tune for most use cases.
+Slice width in micrometers. The main parameter to tune.
 
 ```python
 df = compute_qfactor("scan.tif", segment_width_um=0.5)  # finer slices
@@ -75,7 +79,7 @@ df = compute_qfactor("scan.tif", segment_width_um=2.0)  # coarser slices
 
 ### `QFactorParams`
 
-Controls the Q-factor calculation itself. Defaults are the optimal values from the study — only change if experimenting.
+Controls the Q-factor calculation. Defaults are the optimal values from the study.
 
 ```python
 from qfactor import QFactorParams
@@ -86,15 +90,11 @@ params = QFactorParams(
     gaussian_sigma  = 2.0,       # smoothing applied to profile (0 = disabled)
     window_um       = 20.0,      # trench detection window radius in µm (critical)
 )
-
-df = compute_qfactor("scan.tif", params=params)
 ```
 
 ---
 
 ## Pipeline
-
-Every image goes through these steps in order:
 
 ```
 1. extract_pixel_size()         reads µm/pixel from OME-XML metadata
@@ -111,36 +111,19 @@ Every image goes through these steps in order:
 
 ---
 
-## Batch Extraction — `extract_qfactors.py`
+## Batch Extraction — `src/extract_qfactors.py`
 
-Standalone script that runs `process_dataset()` over all images, joins with metadata, and exports a CSV. No arguments needed for a default run.
+Runs `process_dataset()` over all images, joins with metadata, and exports a CSV.
 
 ```bash
 # Default — 1 µm slices → qfactors_1.0um.csv
-python extract_qfactors.py
+python src/extract_qfactors.py
 
 # Custom slice width
-python extract_qfactors.py --slice 0.5
+python src/extract_qfactors.py --slice 0.5
 
 # Custom output path
-python extract_qfactors.py --slice 2.0 --out dataset.csv
+python src/extract_qfactors.py --slice 2.0 --out dataset.csv
 ```
 
-Output CSV has all 13 Q-factor columns plus any metadata columns joined on `filename`.
-
----
-
-## ML Usage
-
-```python
-import pandas as pd
-
-df = pd.read_csv("qfactors_1.0um.csv")
-
-# Drop failed slices
-df = df[df["q_factor"].notna()]
-
-# Build ML dataset
-X = df[["A", "R", "baseline", "sigma_shoulder", "laser_power", ...]]
-y = df["q_factor"]
-```
+Output CSV has all 13 Q-factor columns plus metadata columns joined on `filename`.
