@@ -67,8 +67,16 @@ def load_metadata(data_dir: Path, datasets: list[str]) -> pd.DataFrame:
         df = pd.read_excel(path)
         df["dataset"] = dataset
         df = df.drop(columns=[c for c in junk if c in df.columns])
-        df = df.rename(columns={"#": "sample_id"})
-        df["sample_id"] = df["sample_id"].astype(int)
+
+        # Rename '#' to sample_id if it exists, otherwise use row position
+        if "#" in df.columns:
+            df = df.rename(columns={"#": "sample_id"})
+            df["sample_id"] = df["sample_id"].astype(int)
+        else:
+            print(f"  Warning: '#' column not found in {dataset}, using row index as sample_id.")
+            print(f"  Columns found: {df.columns.tolist()}")
+            df["sample_id"] = range(1, len(df) + 1)
+
         frames.append(df)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
@@ -115,9 +123,8 @@ def main():
           f"({df_q['q_factor'].notna().mean() * 100:.1f}%)")
 
     # Add sample_id and dataset columns for joining
-    import re
     df_q["dataset"] = df_q["filename"].map(fn_map)
-    df_q["sample_id"] = df_q["filename"].str.extract(r"^(\d+)_").astype(int)
+    df_q["sample_id"] = df_q["filename"].str.split("_").str[0].astype(int)
 
     # Join with metadata on sample_id + dataset
     if not df_metadata.empty:
