@@ -28,8 +28,22 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 from PIL import Image
-from scipy.ndimage import gaussian_filter1d
 from tqdm import tqdm
+
+# GPU support: use CuPy when USE_GPU=1 is set in the environment
+_USE_GPU = os.environ.get('USE_GPU', '0') == '1'
+try:
+    if not _USE_GPU:
+        raise ImportError
+    import cupy as _cp
+    from cupyx.scipy.ndimage import gaussian_filter1d as _cp_gauss
+    def gaussian_filter1d(arr, sigma):
+        return _cp.asnumpy(_cp_gauss(_cp.asarray(arr), sigma))
+    print('qfactor: GPU backend active (CuPy)')
+except ImportError:
+    from scipy.ndimage import gaussian_filter1d
+    if _USE_GPU:
+        print('qfactor: CuPy not found, falling back to CPU')
 
 
 # ---------------------------------------------------------------------------
