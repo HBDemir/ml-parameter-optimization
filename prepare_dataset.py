@@ -33,6 +33,9 @@ DRIVE_CSV = '/content/drive/MyDrive/AI Material Processing Data/qfactors_1.0um.c
 
 
 def mount_drive():
+    # If Drive is already mounted (e.g. from a notebook cell), use it directly
+    if Path('/content/drive/MyDrive').exists():
+        return True
     try:
         from google.colab import drive
         drive.mount('/content/drive')
