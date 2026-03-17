@@ -39,7 +39,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # ---------------------------------------------------------------------------
 
 CSV_PATH = Path("qfactors_1.0um.csv")
-FEATURES = ["scan_speed", "n_pass", "range_um", "power"]
+FEATURES = ["scan_speed", "n_pass", "power"]
 TEST_SIZE = 0.2
 N_RANDOM_SPLITS = 100
 
@@ -47,7 +47,6 @@ RENAME_MAP = {
     "Power(W)": "power",
     "Scanning speed(mm/s)": "scan_speed",
     "Pass": "n_pass",
-    "Range(micron)": "range_um",
 }
 
 RF_PARAM_GRID = {
@@ -75,7 +74,6 @@ def load_data(csv_path: Path):
         Q=("q_factor", "median"),
         scan_speed=("scan_speed", "first"),
         n_pass=("n_pass", "first"),
-        range_um=("range_um", "first"),
         power=("power", "first"),
     ).reset_index()
 
