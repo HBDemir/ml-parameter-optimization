@@ -45,7 +45,6 @@ FEATURES = ["scan_speed", "n_pass"]
 POWER_FILTER = 1.85  # Keep only this power level (most replicated data)
 TEST_SIZE = 0.2
 N_RANDOM_SPLITS = 100
-N_SLICES_PER_IMAGE = 3
 
 RENAME_MAP = {
     "Power(W)": "power",
@@ -64,11 +63,12 @@ RF_PARAM_GRID = {
 # Data loading
 # ---------------------------------------------------------------------------
 
-def load_data(csv_path: Path, n_slices: int = 3, seed: int = 42):
+def load_data(csv_path: Path):
     """
     Load dataset:
-      1. Keep only combos with >1 image (replicated experiments)
-      2. Sample n_slices random slices per image
+      1. Filter to power=1.85, valid Q
+      2. Keep only combos with >1 image (replicated experiments)
+      3. One row per image (median A, R, Q)
     """
     df = pd.read_csv(csv_path)
     df = df.rename(columns=RENAME_MAP)
@@ -84,34 +84,31 @@ def load_data(csv_path: Path, n_slices: int = 3, seed: int = 42):
     df = df.set_index(["scan_speed", "n_pass"])
     df = df.loc[df.index.isin(good_combos)].reset_index()
 
-    # Sample n_slices random slices per image
-    rng = np.random.RandomState(seed)
-    sampled = df.groupby("filename").apply(
-        lambda g: g.sample(n=min(n_slices, len(g)), random_state=rng),
-        include_groups=False,
-    ).reset_index(level=0, drop=False)
+    # One row per image (median)
+    agg = df.groupby("filename").agg(
+        A=("A", "median"),
+        R=("R", "median"),
+        Q=("q_factor", "median"),
+        scan_speed=("scan_speed", "first"),
+        n_pass=("n_pass", "first"),
+    ).reset_index()
 
-    n_images = df["filename"].nunique()
+    n_images = len(agg)
     n_combos = len(good_combos)
 
-    X = sampled[FEATURES].values
-    targets = {
-        "A": sampled["A"].values,
-        "R": sampled["R"].values,
-        "Q": sampled["q_factor"].values,
-    }
-    groups = sampled["filename"].values
+    X = agg[FEATURES].values
+    targets = {"A": agg["A"].values, "R": agg["R"].values, "Q": agg["Q"].values}
 
-    return X, targets, groups, n_combos, n_images
+    return X, targets, n_combos, n_images
 
 
 # ---------------------------------------------------------------------------
 # Core: train & evaluate over N random splits
 # ---------------------------------------------------------------------------
 
-def evaluate(X, y, groups, n_splits):
+def evaluate(X, y, n_splits):
     """
-    N random 80/20 splits (grouped by image to prevent leakage).
+    N random 80/20 splits.
     Each split: standardize, grid search RF, evaluate train+test.
     """
     r2_train, r2_test = [], []
@@ -120,19 +117,9 @@ def evaluate(X, y, groups, n_splits):
     best_r2 = -np.inf
     best_data = None
 
-    # Get unique images for splitting
-    unique_images = np.unique(groups)
-
     for i in tqdm(range(n_splits), desc="  Splits", leave=False):
-        # Split by image (not by row) to prevent leakage
-        img_train, img_test = train_test_split(
-            unique_images, test_size=TEST_SIZE, random_state=i)
-
-        train_mask = np.isin(groups, img_train)
-        test_mask = np.isin(groups, img_test)
-
-        X_tr, X_te = X[train_mask], X[test_mask]
-        y_tr, y_te = y[train_mask], y[test_mask]
+        X_tr, X_te, y_tr, y_te = train_test_split(
+            X, y, test_size=TEST_SIZE, random_state=i)
 
         # Standardize
         scaler = StandardScaler()
@@ -234,8 +221,6 @@ def main():
     parser = argparse.ArgumentParser(description="RF prediction of A, R, Q")
     parser.add_argument("--n-splits", type=int, default=N_RANDOM_SPLITS,
                         help="Number of random 80/20 splits (default: 100)")
-    parser.add_argument("--n-slices", type=int, default=N_SLICES_PER_IMAGE,
-                        help="Random slices sampled per image (default: 3)")
     parser.add_argument("--out", type=str, default="results/rf",
                         help="Output directory (default: results/rf)")
     args = parser.parse_args()
@@ -243,15 +228,12 @@ def main():
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    X, targets, groups, n_combos, n_images = load_data(
-        CSV_PATH, n_slices=args.n_slices)
+    X, targets, n_combos, n_images = load_data(CSV_PATH)
 
     print("Random Forest - Laser Trench Quality Prediction")
     print("=" * 50)
     print("Combos (>1 img): %d" % n_combos)
-    print("Images          : %d" % n_images)
-    print("Slices/image    : %d" % args.n_slices)
-    print("Total rows      : %d" % len(X))
+    print("Images          : %d (one row each, median A/R/Q)" % n_images)
     print("Features        : %s" % ", ".join(FEATURES))
     print("Normalization   : StandardScaler (fit on train)")
     print("Split strategy  : %d random 80/20 (grouped by image)" % args.n_splits)
@@ -263,7 +245,7 @@ def main():
 
     for name, y in targets.items():
         print("[%s] Running %d splits..." % (name, args.n_splits))
-        res = evaluate(X, y, groups, args.n_splits)
+        res = evaluate(X, y, args.n_splits)
         all_results[name] = res
 
         r2_tr, r2_te = res["r2_train"], res["r2_test"]
