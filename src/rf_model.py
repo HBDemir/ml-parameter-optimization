@@ -5,16 +5,18 @@ Random Forest prediction of laser trench quality metrics (A, R, Q)
 from process parameters.
 
 Methodology (following Zhang et al. 2022):
-  - One row per image (median A, R, Q)
+  - Keep only parameter combos with >1 image (replicated experiments)
+  - Sample 3 random slices per image for A, R, Q values
   - Standardized inputs (fit on training set only)
   - 100 random 80/20 train/test splits
   - Grid search for hyperparameters per split
-  - Report mean ± std of R² and MAE
+  - Report mean +/- std of R2 and MAE
 
 Usage
 -----
     python src/rf_model.py                     # full run (100 splits)
     python src/rf_model.py --n-splits 10       # quick test
+    python src/rf_model.py --n-slices 5        # 5 slices per image
 """
 
 import argparse
@@ -39,9 +41,11 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # ---------------------------------------------------------------------------
 
 CSV_PATH = Path("qfactors_1.0um.csv")
-FEATURES = ["scan_speed", "n_pass", "power"]
+FEATURES = ["scan_speed", "n_pass"]
+POWER_FILTER = 1.85  # Keep only this power level (most replicated data)
 TEST_SIZE = 0.2
 N_RANDOM_SPLITS = 100
+N_SLICES_PER_IMAGE = 3
 
 RENAME_MAP = {
     "Power(W)": "power",
@@ -60,38 +64,55 @@ RF_PARAM_GRID = {
 # Data loading
 # ---------------------------------------------------------------------------
 
-def load_data(csv_path: Path):
-    """Load dataset, aggregate to one row per image (median A, R, Q)."""
+def load_data(csv_path: Path, n_slices: int = 3, seed: int = 42):
+    """
+    Load dataset:
+      1. Keep only combos with >1 image (replicated experiments)
+      2. Sample n_slices random slices per image
+    """
     df = pd.read_csv(csv_path)
     df = df.rename(columns=RENAME_MAP)
 
+    # Filter valid Q and single power level
     valid = df["q_factor"].notna() & df["q_factor"].between(0, 1)
     df = df.loc[valid].copy()
+    df = df[df["power"] == POWER_FILTER].copy()
 
-    agg = df.groupby("filename").agg(
-        A=("A", "median"),
-        R=("R", "median"),
-        Q=("q_factor", "median"),
-        scan_speed=("scan_speed", "first"),
-        n_pass=("n_pass", "first"),
-        power=("power", "first"),
-    ).reset_index()
+    # Keep only combos with >1 image
+    combo_counts = df.groupby(["scan_speed", "n_pass"])["filename"].nunique()
+    good_combos = combo_counts[combo_counts > 1].index
+    df = df.set_index(["scan_speed", "n_pass"])
+    df = df.loc[df.index.isin(good_combos)].reset_index()
 
-    X = agg[FEATURES].values
-    targets = {"A": agg["A"].values, "R": agg["R"].values, "Q": agg["Q"].values}
-    return X, targets
+    # Sample n_slices random slices per image
+    rng = np.random.RandomState(seed)
+    sampled = df.groupby("filename").apply(
+        lambda g: g.sample(n=min(n_slices, len(g)), random_state=rng),
+        include_groups=False,
+    ).reset_index(level=0, drop=False)
+
+    n_images = df["filename"].nunique()
+    n_combos = len(good_combos)
+
+    X = sampled[FEATURES].values
+    targets = {
+        "A": sampled["A"].values,
+        "R": sampled["R"].values,
+        "Q": sampled["q_factor"].values,
+    }
+    groups = sampled["filename"].values
+
+    return X, targets, groups, n_combos, n_images
 
 
 # ---------------------------------------------------------------------------
 # Core: train & evaluate over N random splits
 # ---------------------------------------------------------------------------
 
-def evaluate(X, y, n_splits):
+def evaluate(X, y, groups, n_splits):
     """
-    100 random 80/20 splits. Each split:
-      1. Standardize (fit on train only)
-      2. Grid search RF hyperparams (3-fold CV on train)
-      3. Evaluate on train and test
+    N random 80/20 splits (grouped by image to prevent leakage).
+    Each split: standardize, grid search RF, evaluate train+test.
     """
     r2_train, r2_test = [], []
     mae_train, mae_test = [], []
@@ -99,14 +120,26 @@ def evaluate(X, y, n_splits):
     best_r2 = -np.inf
     best_data = None
 
-    for i in tqdm(range(n_splits), desc="  Splits", leave=False):
-        X_tr, X_te, y_tr, y_te = train_test_split(
-            X, y, test_size=TEST_SIZE, random_state=i)
+    # Get unique images for splitting
+    unique_images = np.unique(groups)
 
+    for i in tqdm(range(n_splits), desc="  Splits", leave=False):
+        # Split by image (not by row) to prevent leakage
+        img_train, img_test = train_test_split(
+            unique_images, test_size=TEST_SIZE, random_state=i)
+
+        train_mask = np.isin(groups, img_train)
+        test_mask = np.isin(groups, img_test)
+
+        X_tr, X_te = X[train_mask], X[test_mask]
+        y_tr, y_te = y[train_mask], y[test_mask]
+
+        # Standardize
         scaler = StandardScaler()
         X_tr_s = scaler.fit_transform(X_tr)
         X_te_s = scaler.transform(X_te)
 
+        # Grid search
         grid = GridSearchCV(
             RandomForestRegressor(random_state=42),
             RF_PARAM_GRID, cv=3, scoring="r2", n_jobs=-1,
@@ -144,7 +177,6 @@ def evaluate(X, y, n_splits):
 # ---------------------------------------------------------------------------
 
 def plot_r2_bar(results_dict, out_path):
-    """R² bar chart (train vs test) per target."""
     targets = list(results_dict.keys())
     train_m = [results_dict[t]["r2_train"].mean() * 100 for t in targets]
     test_m = [results_dict[t]["r2_test"].mean() * 100 for t in targets]
@@ -158,8 +190,8 @@ def plot_r2_bar(results_dict, out_path):
     ax.bar(x + w/2, test_m, w, yerr=test_s, label="Testing", capsize=4)
     ax.set_xticks(x)
     ax.set_xticklabels(targets)
-    ax.set_ylabel("R² (%)")
-    ax.set_title("Random Forest — R² (100 random splits)")
+    ax.set_ylabel("R2 (%)")
+    ax.set_title("Random Forest - R2 (100 random splits)")
     ax.legend()
     ax.set_ylim(0, 110)
     fig.savefig(out_path, dpi=150)
@@ -167,31 +199,29 @@ def plot_r2_bar(results_dict, out_path):
 
 
 def plot_overfitting(results_dict, out_path):
-    """Overfitting histogram per target."""
     targets = list(results_dict.keys())
     fig, axes = plt.subplots(1, len(targets), figsize=(5 * len(targets), 4),
                              constrained_layout=True)
     for ax, t in zip(axes, targets):
         overfit = (results_dict[t]["r2_train"] - results_dict[t]["r2_test"]) * 100
         ax.hist(overfit, bins=15, edgecolor="black", alpha=0.7)
-        ax.set_xlabel("Train R² − Test R² (%)")
+        ax.set_xlabel("Train R2 - Test R2 (%)")
         ax.set_ylabel("Count")
-        ax.set_title(f"Overfitting — {t}")
+        ax.set_title("Overfitting - %s" % t)
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
 
 def plot_pred_vs_actual(y_true, y_pred, target_name, out_path):
-    """Best-split scatter plot."""
     fig, ax = plt.subplots(figsize=(5.5, 5), constrained_layout=True)
     ax.scatter(y_true, y_pred, alpha=0.6, s=30, edgecolors="none")
     lo, hi = min(y_true.min(), y_pred.min()), max(y_true.max(), y_pred.max())
     margin = (hi - lo) * 0.05
     ax.plot([lo - margin, hi + margin], [lo - margin, hi + margin], "r--", lw=1)
-    ax.set_xlabel(f"Experimental {target_name}")
-    ax.set_ylabel(f"Predicted {target_name}")
+    ax.set_xlabel("Experimental %s" % target_name)
+    ax.set_ylabel("Predicted %s" % target_name)
     r2 = r2_score(y_true, y_pred)
-    ax.set_title(f"RF — {target_name} (best split R²={r2:.3f})")
+    ax.set_title("RF - %s (best split R2=%.3f)" % (target_name, r2))
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
@@ -204,6 +234,8 @@ def main():
     parser = argparse.ArgumentParser(description="RF prediction of A, R, Q")
     parser.add_argument("--n-splits", type=int, default=N_RANDOM_SPLITS,
                         help="Number of random 80/20 splits (default: 100)")
+    parser.add_argument("--n-slices", type=int, default=N_SLICES_PER_IMAGE,
+                        help="Random slices sampled per image (default: 3)")
     parser.add_argument("--out", type=str, default="results/rf",
                         help="Output directory (default: results/rf)")
     args = parser.parse_args()
@@ -211,57 +243,59 @@ def main():
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    X, targets = load_data(CSV_PATH)
+    X, targets, groups, n_combos, n_images = load_data(
+        CSV_PATH, n_slices=args.n_slices)
 
-    print("Random Forest — Laser Trench Quality Prediction")
+    print("Random Forest - Laser Trench Quality Prediction")
     print("=" * 50)
-    print(f"Samples       : {len(X)} (one per image)")
-    print(f"Features      : {', '.join(FEATURES)}")
-    print(f"Normalization : StandardScaler (fit on train)")
-    print(f"Strategy      : {args.n_splits} random 80/20 splits")
-    print(f"Hyperparam    : GridSearchCV (3-fold on train)")
+    print("Combos (>1 img): %d" % n_combos)
+    print("Images          : %d" % n_images)
+    print("Slices/image    : %d" % args.n_slices)
+    print("Total rows      : %d" % len(X))
+    print("Features        : %s" % ", ".join(FEATURES))
+    print("Normalization   : StandardScaler (fit on train)")
+    print("Split strategy  : %d random 80/20 (grouped by image)" % args.n_splits)
+    print("Hyperparam      : GridSearchCV (3-fold on train)")
     print()
 
     all_results = {}
     summary = []
 
     for name, y in targets.items():
-        print(f"[{name}] Running {args.n_splits} splits...", end=" ", flush=True)
-        res = evaluate(X, y, args.n_splits)
+        print("[%s] Running %d splits..." % (name, args.n_splits))
+        res = evaluate(X, y, groups, args.n_splits)
         all_results[name] = res
 
         r2_tr, r2_te = res["r2_train"], res["r2_test"]
         mae_tr, mae_te = res["mae_train"], res["mae_test"]
 
-        print(f"R² train={r2_tr.mean()*100:.1f}±{r2_tr.std()*100:.1f}%  "
-              f"test={r2_te.mean()*100:.1f}±{r2_te.std()*100:.1f}%  "
-              f"MAE train={mae_tr.mean():.3f}±{mae_tr.std():.3f}  "
-              f"test={mae_te.mean():.3f}±{mae_te.std():.3f}")
+        print("  R2 train=%.1f+/-%.1f%%  test=%.1f+/-%.1f%%  "
+              "MAE train=%.3f+/-%.3f  test=%.3f+/-%.3f" % (
+                  r2_tr.mean()*100, r2_tr.std()*100,
+                  r2_te.mean()*100, r2_te.std()*100,
+                  mae_tr.mean(), mae_tr.std(),
+                  mae_te.mean(), mae_te.std()))
 
         summary.append({
             "target": name,
-            "r2_train": f"{r2_tr.mean()*100:.1f}±{r2_tr.std()*100:.1f}",
-            "r2_test": f"{r2_te.mean()*100:.1f}±{r2_te.std()*100:.1f}",
-            "mae_train": f"{mae_tr.mean():.3f}±{mae_tr.std():.3f}",
-            "mae_test": f"{mae_te.mean():.3f}±{mae_te.std():.3f}",
-            "overfit": f"{(r2_tr - r2_te).mean()*100:.1f}%",
+            "r2_train": "%.1f+/-%.1f" % (r2_tr.mean()*100, r2_tr.std()*100),
+            "r2_test": "%.1f+/-%.1f" % (r2_te.mean()*100, r2_te.std()*100),
+            "mae_train": "%.3f+/-%.3f" % (mae_tr.mean(), mae_tr.std()),
+            "mae_test": "%.3f+/-%.3f" % (mae_te.mean(), mae_te.std()),
+            "overfit": "%.1f%%" % ((r2_tr - r2_te).mean()*100),
         })
 
-        # Pred vs actual for best split
         y_te, pred_te, _ = res["best_data"]
         plot_pred_vs_actual(y_te, pred_te, name,
-                            out_dir / f"pred_vs_actual_{name}.png")
+                            out_dir / ("pred_vs_actual_%s.png" % name))
 
-    # Plots
     plot_r2_bar(all_results, out_dir / "r2_comparison.png")
     plot_overfitting(all_results, out_dir / "overfitting.png")
-
-    # Save CSV
     pd.DataFrame(summary).to_csv(out_dir / "results.csv", index=False)
 
     print()
     print(pd.DataFrame(summary).to_string(index=False))
-    print(f"\nResults saved to {out_dir}/")
+    print("\nResults saved to %s/" % out_dir)
 
 
 if __name__ == "__main__":
