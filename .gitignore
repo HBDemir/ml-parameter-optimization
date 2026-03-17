@@ -16,5 +16,9 @@ __pycache__/
 .idea/
 .vscode/
 
+# Models
+models/
+*.joblib
+
 # Claude
 .claude/
